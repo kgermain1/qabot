@@ -1,4 +1,5 @@
 import streamlit as st
+import json
 from openai import OpenAI
 from docx import Document
 import pandas as pd
@@ -7,18 +8,25 @@ from oauth2client.service_account import ServiceAccountCredentials
 
 client = OpenAI(api_key=st.secrets["openai"]["api_key"])
 
+# Get the credentials JSON from the secrets manager
+credentials_info = json.loads(st.secrets["google"]["credentials_json"])
+
+# Load the credentials from Streamlit secrets
+credentials_json = st.secrets["google"]["credentials_json"]
+credentials_dict = json.loads(credentials_json)
+
 # Google Sheets Credentials
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1INz9LD7JUaZiIbY4uoGId0riIhkltlE6aroLKOAWtNo/edit#gid=0"
-CREDENTIALS_FILE = "zenith-ww-65cc590712fd.json"  # Replace with your Google Sheets API credentials file
 
 # Use the latest OpenAI GPT model
 MODEL_NAME = "gpt-4"
 
 # Initialize Google Sheets
 def get_google_sheets():
+    # Set the scope and authenticate
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    credentials = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
-    client = gspread.authorize(credentials)
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(credentials_dict, scope)
+    client = gspread.authorize(creds)
     return client.open_by_url(GOOGLE_SHEET_URL)
 
 def get_tab_names(sheet):
