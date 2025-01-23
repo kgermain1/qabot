@@ -11,10 +11,6 @@ client = OpenAI(api_key=st.secrets["openai"]["api_key"])
 # Get the credentials JSON from the secrets manager
 credentials_info = json.loads(st.secrets["google"]["credentials_json"])
 
-# Load the credentials from Streamlit secrets
-credentials_json = st.secrets["google"]["credentials_json"]
-credentials_dict = json.loads(credentials_json)
-
 # Google Sheets Credentials
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1INz9LD7JUaZiIbY4uoGId0riIhkltlE6aroLKOAWtNo/edit#gid=0"
 
@@ -23,9 +19,8 @@ MODEL_NAME = "gpt-4"
 
 # Initialize Google Sheets
 def get_google_sheets():
-    # Set the scope and authenticate
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(credentials_dict, scope)
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(credentials_info, scope)
     client = gspread.authorize(creds)
     return client.open_by_url(GOOGLE_SHEET_URL)
 
@@ -35,22 +30,18 @@ def get_tab_names(sheet):
 
 def get_rules(sheet, client, market):
     """Retrieve tone-of-voice rules for the selected client and market."""
-    # Fetch rules from ALL CLIENTS tab
     all_clients_tab = sheet.worksheet("ALL CLIENTS")
     all_clients_rules = pd.DataFrame(all_clients_tab.get_all_records())
     all_clients_rules["Source Client"] = "ALL CLIENTS"
 
-    # Fetch rules from the selected client’s tab
     client_tab = sheet.worksheet(client)
     client_rules = pd.DataFrame(client_tab.get_all_records())
     client_rules["Source Client"] = client
 
-    # Filter client-specific rules for the selected market or "All"
     client_market_rules = client_rules[
         (client_rules["Market"] == market) | (client_rules["Market"] == "All")
     ]
 
-    # Combine rules, preserving the source information
     combined_rules = pd.concat([all_clients_rules, client_market_rules], ignore_index=True)
     return combined_rules
 
@@ -61,46 +52,61 @@ def read_docx(file):
     return text
 
 def check_compliance(document_text, rules_df):
-    """Checks compliance of the document against the rules."""
-    # Use the rule name, rule content, and source for the check
-    tone_rules = rules_df[["Rule Name", "Rules", "Market", "Source Client"]].to_dict("records")
-    rules_list = "\n".join(
-        [f"- Rule Name: {rule['Rule Name']} | Rule: {rule['Rules']} (Client: {rule['Source Client']}, Market: {rule['Market']})" for rule in tone_rules]
-    )
+    """Checks compliance of the document against the rules in chunks of 20."""
+    rules_list = rules_df.to_dict("records")
+    chunked_rules = [rules_list[i:i + 20] for i in range(0, len(rules_list), 20)]
+    all_reports = []
+    violation_number = 1
 
-    messages = [
-        {"role": "system", "content": "You are an expert in compliance and tone-of-voice review."},
-        {
-            "role": "user",
-            "content": f"""
+    for chunk in chunked_rules:
+        rules_text = "\n".join(
+            [f"- Rule Name: {rule['Rule Name']} | Rule: {rule['Rules']} (Client: {rule['Source Client']}, Market: {rule['Market']})"
+             for rule in chunk]
+        )
+
+        messages = [
+            {"role": "system", "content": "You are an expert in compliance and tone-of-voice review."},
+            {
+                "role": "user",
+                "content": f"""
 Document Content:
 {document_text}
 
 Tone of Voice Rules:
-{rules_list}
+{rules_text}
 
 Analyze the document for compliance with the rules. Identify any violations and state which rule is being violated. For each violation, list:
-- The exact rule name from the rules list (Column B).
-- The client name: the source of the rule as specified in the rules list.
-- The market name: the source market as specified in the rules list.
-
-Structure the report as follows:
-1. State whether the document is "Compliant" or "Non-Compliant".
-2. If non-compliant, provide details of each violation, including the rule name, client name, and market.
+1. Rule name (number it continuously across chunks).
+2. Client name.
+3. Market name.
+4. Details of the violation.
 """,
-        },
-    ]
+            },
+        ]
 
-    try:
-        response = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=messages,
-            max_tokens=2000,
-            temperature=0.5,
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        return f"An error occurred: {str(e)}"
+        try:
+            response = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=messages,
+                max_tokens=2000,
+                temperature=0.5,
+            )
+            report = response.choices[0].message.content
+            # Format and extract violations with continuous numbering
+            violations = []
+            for line in report.split("\n\n"):
+                if line.strip():
+                    formatted_violation = f"{violation_number}. {line.strip()}"
+                    violations.append(formatted_violation)
+                    violation_number += 1
+            all_reports.extend(violations)
+        except Exception as e:
+            return f"An error occurred: {str(e)}"
+
+    # Combine all reports into a single response
+    compliance_status = "Compliant" if not all_reports else "Non-Compliant"
+    combined_report = f"Document Status: {compliance_status}\n\n" + "\n\n".join(all_reports)
+    return combined_report
 
 # Streamlit App
 st.title("Welcome to QAbot")
@@ -133,21 +139,16 @@ uploaded_file = st.file_uploader("Upload a Word document", type=["docx"])
 
 if st.button("Check Compliance"):
     if uploaded_file and selected_client and selected_market:
-        # Process the uploaded file
         document_text = read_docx(uploaded_file)
-
-        # Retrieve tone rules
         rules_df = get_rules(sheet, selected_client, selected_market)
 
         with st.spinner("Checking compliance..."):
-            # Check compliance using the model
             compliance_report = check_compliance(document_text, rules_df)
-
             if compliance_report.startswith("An error occurred"):
                 st.error(compliance_report)
             else:
                 st.success("Compliance check complete!")
                 st.subheader("Compliance Report")
-                st.text_area("Report", value=compliance_report, height=300, disabled=True)
+                st.text_area("Report", value=compliance_report, height=400, disabled=True)
     else:
         st.error("Please upload a document, select a client, and a market.")
