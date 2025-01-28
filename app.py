@@ -175,6 +175,6 @@ if st.button("Check Compliance"):
                 if report.startswith("An error occurred"):
                     st.error(report)
                 else:
-                    st.text_area(f"{ruleset} Report", value=report, height=300, disabled=True)
+                    st.text_area(f"{ruleset} Report", value=report, height=300, disabled=True, label_visibility="hidden")
     else:
         st.error("Please upload a document, select a client, and a market.")
